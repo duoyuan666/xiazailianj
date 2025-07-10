@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图片视频链接批量解析</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .input-section {
+            margin-bottom: 30px;
+        }
+
+        .input-section label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        .url-input {
+            width: 100%;
+            min-height: 150px;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            font-size: 14px;
+            resize: vertical;
+            transition: all 0.3s ease;
+            background: #fafafa;
+            font-family: 'Courier New', monospace;
+        }
+
+        .url-input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            background: white;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 15px 25px;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-secondary {
+            background: #f8f9fa;
+            color: #6c757d;
+            border: 2px solid #e9ecef;
+        }
+
+        .btn-secondary:hover {
+            background: #e9ecef;
+            transform: translateY(-1px);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .progress-section {
+            margin-bottom: 30px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .stat-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e9ecef;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            transition: width 0.3s ease;
+            border-radius: 4px;
+        }
+
+        .progress-text {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+        }
+
+        .log-section {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #e9ecef;
+        }
+
+        .log-item {
+            margin-bottom: 8px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .log-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .log-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .log-info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .log-warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .status-icon {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .icon-success { background: #28a745; }
+        .icon-error { background: #dc3545; }
+        .icon-info { background: #17a2b8; }
+        .icon-warning { background: #ffc107; }
+
+        .hidden {
+            display: none;
+        }
+
+        .fade-in {
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .download-links {
+            background: #fff;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+
+        .download-link {
+            display: block;
+            padding: 8px 12px;
+            margin: 5px 0;
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            text-decoration: none;
+            color: #495057;
+            font-size: 13px;
+            transition: all 0.2s ease;
+        }
+
+        .download-link:hover {
+            background: #e9ecef;
+            text-decoration: none;
+        }
+
+        .copy-btn {
+            background: #17a2b8;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📱 图片视频链接批量解析</h1>
+        
+        <div class="input-section">
+            <label for="urlInput">粘贴链接（每行一个）：</label>
+            <textarea 
+                id="urlInput" 
+                class="url-input" 
+                placeholder="请粘贴图片或视频链接，支持：&#10;• 小红书视频/图片链接&#10;• 抖音视频链接&#10;• 其他直链媒体文件&#10;&#10;多个链接请换行分隔"
+            ></textarea>
+        </div>
+
+        <div class="button-group">
+            <button id="downloadBtn" class="btn btn-primary">
+                🚀 开始处理
+            </button>
+            <button id="clearBtn" class="btn btn-secondary">
+                🗑️ 清空
+            </button>
+        </div>
+
+        <div id="progressSection" class="progress-section hidden">
+            <div class="stats">
+                <div class="stat-card">
+                    <div id="totalCount" class="stat-number">0</div>
+                    <div class="stat-label">总数</div>
+                </div>
+                <div class="stat-card">
+                    <div id="successCount" class="stat-number">0</div>
+                    <div class="stat-label">成功</div>
+                </div>
+                <div class="stat-card">
+                    <div id="errorCount" class="stat-number">0</div>
+                    <div class="stat-label">失败</div>
+                </div>
+                <div class="stat-card">
+                    <div id="currentProgress" class="stat-number">0%</div>
+                    <div class="stat-label">进度</div>
+                </div>
+            </div>
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill" style="width: 0%"></div>
+            </div>
+            <div id="progressText" class="progress-text">准备开始...</div>
+        </div>
+
+        <div class="log-section">
+            <div id="logContainer"></div>
+            <div id="downloadLinks" class="download-links hidden">
+                <strong>📥 下载链接：</strong>
+                <div id="linkContainer"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class MediaParser {
+            constructor() {
+                this.downloadBtn = document.getElementById('downloadBtn');
+                this.clearBtn = document.getElementById('clearBtn');
+                this.urlInput = document.getElementById('urlInput');
+                this.progressSection = document.getElementById('progressSection');
+                this.progressFill = document.getElementById('progressFill');
+                this.progressText = document.getElementById('progressText');
+                this.logContainer = document.getElementById('logContainer');
+                this.downloadLinks = document.getElementById('downloadLinks');
+                this.linkContainer = document.getElementById('linkContainer');
+                
+                this.totalCount = document.getElementById('totalCount');
+                this.successCount = document.getElementById('successCount');
+                this.errorCount = document.getElementById('errorCount');
+                this.currentProgress = document.getElementById('currentProgress');
+                
+                this.isProcessing = false;
+                this.stats = { total: 0, success: 0, error: 0 };
+                
+                this.initEvents();
+            }
+
+            initEvents() {
+                this.downloadBtn.addEventListener('click', () => this.startProcess());
+                this.clearBtn.addEventListener('click', () => this.clearAll());
+            }
+
+            log(message, type = 'info') {
+                const logItem = document.createElement('div');
+                logItem.className = `log-item log-${type} fade-in`;
+                
+                const icon = document.createElement('span');
+                icon.className = `status-icon icon-${type}`;
+                
+                const text = document.createElement('span');
+                text.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+                
+                logItem.appendChild(icon);
+                logItem.appendChild(text);
+                
+                this.logContainer.appendChild(logItem);
+                this.logContainer.scrollTop = this.logContainer.scrollHeight;
+            }
+
+            clearAll() {
+                this.logContainer.innerHTML = '';
+                this.linkContainer.innerHTML = '';
+                this.progressSection.classList.add('hidden');
+                this.downloadLinks.classList.add('hidden');
+                this.stats = { total: 0, success: 0, error: 0 };
+                this.updateStats();
+            }
+
+            updateStats() {
+                this.totalCount.textContent = this.stats.total;
+                this.successCount.textContent = this.stats.success;
+                this.errorCount.textContent = this.stats.error;
+                
+                const progress = this.stats.total > 0 ? 
+                    Math.round(((this.stats.success + this.stats.error) / this.stats.total) * 100) : 0;
+                this.currentProgress.textContent = `${progress}%`;
+                
+                this.progressFill.style.width = `${progress}%`;
+                this.progressText.textContent = 
+                    `已处理 ${this.stats.success + this.stats.error} / ${this.stats.total} 个文件`;
+            }
+
+            getUrls() {
+                return this.urlInput.value.trim().split('\n')
+                    .map(url => url.trim())
+                    .filter(url => url.length > 0);
+            }
+
+            async startProcess() {
+                if (this.isProcessing) return;
+                
+                const urls = this.getUrls();
+                if (urls.length === 0) {
+                    this.log('请输入至少一个链接', 'error');
+                    return;
+                }
+
+                this.isProcessing = true;
+                this.downloadBtn.disabled = true;
+                this.downloadBtn.textContent = '⏳ 处理中...';
+                
+                this.progressSection.classList.remove('hidden');
+                this.stats = { total: urls.length, success: 0, error: 0 };
+                this.updateStats();
+                
+                this.log(`开始处理 ${urls.length} 个链接`, 'info');
+                
+                const zip = new JSZip();
+                
+                for (let i = 0; i < urls.length; i++) {
+                    const url = urls[i];
+                    await this.processUrl(url, zip);
+                }
+                
+                if (this.stats.success > 0) {
+                    if (this.stats.success === 1 && urls.length === 1) {
+                        this.log('文件处理完成', 'success');
+                    } else {
+                        this.log('正在生成压缩包...', 'info');
+                        const content = await zip.generateAsync({ type: 'blob' });
+                        const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+                        this.saveFile(content, `媒体文件_${timestamp}.zip`);
+                        this.log(`压缩包已生成，包含 ${this.stats.success} 个文件`, 'success');
+                    }
+                }
+                
+                this.isProcessing = false;
+                this.downloadBtn.disabled = false;
+                this.downloadBtn.textContent = '🚀 开始处理';
+                
+                this.log(`处理完成！成功: ${this.stats.success}, 失败: ${this.stats.error}`, 'info');
+            }
+
+            async processUrl(url, zip) {
+                const filename = this.getFilename(url);
+                
+                try {
+                    // 方法1: 直接下载
+                    let blob = await this.tryDirectDownload(url);
+                    
+                    if (!blob) {
+                        // 方法2: 使用代理
+                        blob = await this.tryProxyDownload(url);
+                    }
+                    
+                    if (blob) {
+                        if (this.stats.total === 1) {
+                            this.saveFile(blob, filename);
+                        } else {
+                            zip.file(filename, blob);
+                        }
+                        this.stats.success++;
+                        this.log(`✅ ${filename} 下载成功`, 'success');
+                    } else {
+                        // 方法3: 生成下载链接
+                        this.createDownloadLink(url, filename);
+                        this.stats.success++;
+                        this.log(`📋 ${filename} 已生成下载链接`, 'warning');
+                    }
+                } catch (error) {
+                    this.stats.error++;
+                    this.log(`❌ ${filename} 处理失败: ${error.message}`, 'error');
+                } finally {
+                    this.updateStats();
+                }
+            }
+
+            async tryDirectDownload(url) {
+                try {
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                            'Referer': this.getReferer(url),
+                            'Accept': '*/*',
+                            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                            'Cache-Control': 'no-cache'
+                        },
+                        mode: 'cors'
+                    });
+                    
+                    if (response.ok) {
+                        return await response.blob();
+                    }
+                    return null;
+                } catch (error) {
+                    return null;
+                }
+            }
+
+            async tryProxyDownload(url) {
+                const proxies = [
+                    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+                    `https://cors-anywhere.herokuapp.com/${url}`,
+                    `https://proxy.cors.sh/${url}`
+                ];
+                
+                for (const proxyUrl of proxies) {
+                    try {
+                        const response = await fetch(proxyUrl, {
+                            headers: {
+                                'X-Requested-With': 'XMLHttpRequest'
+                            }
+                        });
+                        
+                        if (response.ok) {
+                            return await response.blob();
+                        }
+                    } catch (error) {
+                        continue;
+                    }
+                }
+                return null;
+            }
+
+            createDownloadLink(url, filename) {
+                if (this.downloadLinks.classList.contains('hidden')) {
+                    this.downloadLinks.classList.remove('hidden');
+                }
+                
+                const linkDiv = document.createElement('div');
+                linkDiv.innerHTML = `
+                    <a href="${url}" target="_blank" class="download-link" download="${filename}">
+                        📥 ${filename}
+                    </a>
+                    <button class="copy-btn" onclick="navigator.clipboard.writeText('${url}')">复制</button>
+                `;
+                this.linkContainer.appendChild(linkDiv);
+            }
+
+            getReferer(url) {
+                if (url.includes('xhscdn.com') || url.includes('xiaohongshu.com')) {
+                    return 'https://www.xiaohongshu.com/';
+                } else if (url.includes('douyin.com') || url.includes('aweme.com')) {
+                    return 'https://www.douyin.com/';
+                }
+                return '';
+            }
+
+            getFilename(url) {
+                try {
+                    const urlPath = new URL(url).pathname;
+                    let filename = urlPath.split('/').pop();
+                    
+                    if (!filename.includes('.')) {
+                        if (url.includes('video') || url.includes('.mp4') || url.includes('stream')) {
+                            filename += '.mp4';
+                        } else if (url.includes('image') || url.includes('.jpg') || url.includes('.png') || url.includes('imageView')) {
+                            filename += '.jpg';
+                        } else {
+                            filename += '.file';
+                        }
+                    }
+                    
+                    filename = filename.replace(/[<>:"/\\|?*]/g, '_');
+                    
+                    if (!filename || filename === '.file') {
+                        const timestamp = Date.now();
+                        const isVideo = url.includes('video') || url.includes('.mp4') || url.includes('stream');
+                        const ext = isVideo ? '.mp4' : '.jpg';
+                        filename = `媒体文件_${timestamp}${ext}`;
+                    }
+                    
+                    return filename;
+                } catch (error) {
+                    return `文件_${Date.now()}.file`;
+                }
+            }
+
+            saveFile(blob, filename) {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
+        }
+
+        // 初始化应用
+        document.addEventListener('DOMContentLoaded', () => {
+            new MediaParser();
+        });
+    </script>
+</body>
+</html>
