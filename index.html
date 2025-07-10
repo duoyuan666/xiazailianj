@@ -93,11 +93,24 @@
         .btn-primary {
             background: linear-gradient(45deg, #667eea, #764ba2);
             color: white;
+            position: relative;
+            overflow: hidden;
         }
 
         .btn-primary:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-primary:disabled {
+            background: linear-gradient(45deg, #ffc107, #ff6b6b);
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(255, 193, 7, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(255, 193, 7, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 193, 7, 0); }
         }
 
         .btn-secondary {
@@ -418,120 +431,211 @@
 
                 this.isProcessing = true;
                 this.downloadBtn.disabled = true;
-                this.downloadBtn.textContent = '⏳ 处理中...';
+                this.downloadBtn.textContent = '⚡ 智能处理中...';
                 
                 this.progressSection.classList.remove('hidden');
                 this.stats = { total: urls.length, success: 0, error: 0 };
                 this.updateStats();
                 
-                this.log(`开始处理 ${urls.length} 个链接`, 'info');
+                this.log(`🔍 开始智能检测 ${urls.length} 个链接...`, 'info');
+                this.log(`💡 提示: 如果文件无法直接下载，将自动生成下载链接`, 'info');
                 
                 const zip = new JSZip();
+                let hasValidFiles = false;
                 
-                for (let i = 0; i < urls.length; i++) {
-                    const url = urls[i];
-                    await this.processUrl(url, zip);
+                // 并发处理，每批3个链接（减少并发数避免被限制）
+                const batchSize = 3;
+                const batches = [];
+                for (let i = 0; i < urls.length; i += batchSize) {
+                    batches.push(urls.slice(i, i + batchSize));
                 }
                 
-                if (this.stats.success > 0) {
-                    if (this.stats.success === 1 && urls.length === 1) {
-                        this.log('文件处理完成', 'success');
-                    } else {
-                        this.log('正在生成压缩包...', 'info');
-                        const content = await zip.generateAsync({ type: 'blob' });
-                        const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
-                        this.saveFile(content, `媒体文件_${timestamp}.zip`);
-                        this.log(`压缩包已生成，包含 ${this.stats.success} 个文件`, 'success');
+                for (const batch of batches) {
+                    const promises = batch.map(url => this.processUrlFast(url, zip));
+                    await Promise.all(promises);
+                }
+                
+                // 检查是否有实际下载的文件
+                const zipFiles = Object.keys(zip.files);
+                for (const fileName of zipFiles) {
+                    const file = zip.files[fileName];
+                    if (file && !file.dir) {
+                        // 检查文件是否有实际内容
+                        try {
+                            const content = await file.async('blob');
+                            if (content.size >= 1024) {
+                                hasValidFiles = true;
+                                break;
+                            }
+                        } catch (e) {
+                            continue;
+                        }
                     }
+                }
+                
+                if (hasValidFiles) {
+                    this.log('✅ 检测到有效文件，正在生成压缩包...', 'info');
+                    const content = await zip.generateAsync({ 
+                        type: 'blob',
+                        compression: 'DEFLATE',
+                        compressionOptions: { level: 6 }
+                    });
+                    const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+                    this.saveFile(content, `媒体文件_${timestamp}.zip`);
+                    this.log(`📦 压缩包已生成 (${this.formatFileSize(content.size)})`, 'success');
+                } else {
+                    this.log(`🔗 由于跨域限制，无法直接下载文件`, 'warning');
+                    this.log(`💡 请使用下方的下载链接手动下载`, 'info');
                 }
                 
                 this.isProcessing = false;
                 this.downloadBtn.disabled = false;
-                this.downloadBtn.textContent = '🚀 开始处理';
+                this.downloadBtn.textContent = '⚡ 高速处理';
                 
-                this.log(`处理完成！成功: ${this.stats.success}, 失败: ${this.stats.error}`, 'info');
+                this.log(`✨ 处理完成！请查看下载链接或压缩包`, 'info');
             }
 
-            async processUrl(url, zip) {
+            async processUrlFast(url, zip) {
                 const filename = this.getFilename(url);
                 
                 try {
-                    // 方法1: 直接下载
-                    let blob = await this.tryDirectDownload(url);
-                    
-                    if (!blob) {
-                        // 方法2: 使用代理
-                        blob = await this.tryProxyDownload(url);
+                    // 优先尝试检测文件大小
+                    const fileSize = await this.checkFileSize(url);
+                    if (fileSize) {
+                        this.log(`📏 ${filename} 检测到文件大小: ${this.formatFileSize(fileSize)}`, 'info');
                     }
                     
-                    if (blob) {
+                    // 快速尝试，设置较短的超时时间
+                    let blob = await this.tryDirectDownloadFast(url);
+                    
+                    if (!blob || blob.size < 1024) { // 如果文件小于1KB，可能下载失败
+                        this.log(`⚠️ ${filename} 直接下载失败或文件过小，尝试代理...`, 'warning');
+                        blob = await this.tryProxyDownloadFast(url);
+                    }
+                    
+                    if (blob && blob.size >= 1024) { // 确保文件有实际内容
                         if (this.stats.total === 1) {
                             this.saveFile(blob, filename);
                         } else {
                             zip.file(filename, blob);
                         }
                         this.stats.success++;
-                        this.log(`✅ ${filename} 下载成功`, 'success');
+                        this.log(`⚡ ${filename} 下载成功 (${this.formatFileSize(blob.size)})`, 'success');
                     } else {
-                        // 方法3: 生成下载链接
+                        // 如果下载失败，直接创建下载链接而不是空文件
                         this.createDownloadLink(url, filename);
                         this.stats.success++;
-                        this.log(`📋 ${filename} 已生成下载链接`, 'warning');
+                        this.log(`🔗 ${filename} 由于跨域限制，已生成直接下载链接`, 'warning');
                     }
                 } catch (error) {
-                    this.stats.error++;
-                    this.log(`❌ ${filename} 处理失败: ${error.message}`, 'error');
+                    // 失败时也生成下载链接
+                    this.createDownloadLink(url, filename);
+                    this.stats.success++; // 算作成功，因为提供了下载方式
+                    this.log(`🔗 ${filename} 下载受限，已生成下载链接: ${error.message}`, 'warning');
                 } finally {
                     this.updateStats();
                 }
             }
 
-            async tryDirectDownload(url) {
+            async checkFileSize(url) {
+                try {
+                    const response = await fetch(url, { 
+                        method: 'HEAD',
+                        mode: 'no-cors' 
+                    });
+                    const contentLength = response.headers.get('content-length');
+                    return contentLength ? parseInt(contentLength) : null;
+                } catch (error) {
+                    return null;
+                }
+            }
+
+            formatFileSize(bytes) {
+                if (bytes === 0) return '0 B';
+                const k = 1024;
+                const sizes = ['B', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+
+            async tryDirectDownloadFast(url) {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 8000); // 8秒超时
+                
                 try {
                     const response = await fetch(url, {
                         method: 'GET',
                         headers: {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                             'Referer': this.getReferer(url),
                             'Accept': '*/*',
                             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                            'Cache-Control': 'no-cache'
+                            'Cache-Control': 'no-cache',
+                            'Connection': 'keep-alive'
                         },
+                        signal: controller.signal,
                         mode: 'cors'
                     });
+                    
+                    clearTimeout(timeoutId);
                     
                     if (response.ok) {
                         return await response.blob();
                     }
                     return null;
                 } catch (error) {
+                    clearTimeout(timeoutId);
                     return null;
                 }
             }
 
-            async tryProxyDownload(url) {
+            async tryProxyDownloadFast(url) {
                 const proxies = [
+                    // 快速代理列表，优先使用速度快的
                     `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
                     `https://cors-anywhere.herokuapp.com/${url}`,
-                    `https://proxy.cors.sh/${url}`
+                    `https://proxy.cors.sh/${url}`,
+                    `https://thingproxy.freeboard.io/fetch/${url}`
                 ];
                 
-                for (const proxyUrl of proxies) {
+                // 并发尝试多个代理，取最快的
+                const promises = proxies.map(async (proxyUrl) => {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 6000); // 6秒超时
+                    
                     try {
                         const response = await fetch(proxyUrl, {
                             headers: {
-                                'X-Requested-With': 'XMLHttpRequest'
-                            }
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                            },
+                            signal: controller.signal
                         });
+                        
+                        clearTimeout(timeoutId);
                         
                         if (response.ok) {
                             return await response.blob();
                         }
+                        return null;
                     } catch (error) {
-                        continue;
+                        clearTimeout(timeoutId);
+                        return null;
                     }
+                });
+                
+                // 返回第一个成功的结果
+                try {
+                    const results = await Promise.allSettled(promises);
+                    for (const result of results) {
+                        if (result.status === 'fulfilled' && result.value) {
+                            return result.value;
+                        }
+                    }
+                    return null;
+                } catch (error) {
+                    return null;
                 }
-                return null;
             }
 
             createDownloadLink(url, filename) {
@@ -540,11 +644,48 @@
                 }
                 
                 const linkDiv = document.createElement('div');
+                linkDiv.style.marginBottom = '10px';
                 linkDiv.innerHTML = `
-                    <a href="${url}" target="_blank" class="download-link" download="${filename}">
-                        📥 ${filename}
-                    </a>
-                    <button class="copy-btn" onclick="navigator.clipboard.writeText('${url}')">复制</button>
+                    <div style="display: flex; align-items: center; gap: 10px; padding: 10px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
+                        <div style="flex: 1;">
+                            <div style="font-weight: bold; color: #495057; margin-bottom: 4px;">${filename}</div>
+                            <div style="font-size: 12px; color: #6c757d; font-family: monospace; word-break: break-all;">${url}</div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 5px;">
+                            <a href="${url}" target="_blank" style="
+                                display: inline-block;
+                                padding: 6px 12px;
+                                background: linear-gradient(45deg, #28a745, #20c997);
+                                color: white;
+                                text-decoration: none;
+                                border-radius: 6px;
+                                font-size: 12px;
+                                font-weight: bold;
+                                text-align: center;
+                                transition: all 0.2s ease;
+                            " onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='translateY(0)'">
+                                📥 直接下载
+                            </a>
+                            <button onclick="
+                                navigator.clipboard.writeText('${url}').then(() => {
+                                    this.textContent = '✅ 已复制';
+                                    setTimeout(() => { this.textContent = '📋 复制链接'; }, 2000);
+                                });
+                            " style="
+                                padding: 6px 12px;
+                                background: #17a2b8;
+                                color: white;
+                                border: none;
+                                border-radius: 6px;
+                                font-size: 12px;
+                                font-weight: bold;
+                                cursor: pointer;
+                                transition: all 0.2s ease;
+                            " onmouseover="this.style.background='#138496'" onmouseout="this.style.background='#17a2b8'">
+                                📋 复制链接
+                            </button>
+                        </div>
+                    </div>
                 `;
                 this.linkContainer.appendChild(linkDiv);
             }
