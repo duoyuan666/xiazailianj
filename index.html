@@ -534,20 +534,7 @@
             }
 
             async processGitHubMode(urls) {
-                // GitHub Pages模式：直接生成下载链接，不尝试下载
-                this.downloadLinks.classList.remove('hidden');
-                
-                urls.forEach((url, index) => {
-                    const filename = this.getFilename(url);
-                    this.createDownloadLink(url, filename);
-                    this.stats.success++;
-                    this.updateStats();
-                    this.log(`🔗 ${filename} 下载链接已生成`, 'success');
-                });
-            }
-
-            async processLocalMode(urls) {
-                // 本地模式：尝试直接下载 + 备用链接
+                // 在线模式：使用多种方法尝试真实下载
                 const zip = new JSZip();
                 let hasValidFiles = false;
                 
@@ -555,48 +542,327 @@
                     const filename = this.getFilename(url);
                     
                     try {
-                        // 尝试简单的fetch
-                        const response = await fetch(url, {
-                            method: 'GET',
-                            mode: 'no-cors'
-                        });
+                        // 方法1: 尝试使用服务端代理下载
+                        let blob = await this.downloadViaProxy(url);
                         
-                        if (response.ok || response.type === 'opaque') {
-                            const blob = await response.blob();
-                            if (blob.size > 0) {
-                                zip.file(filename, blob);
-                                hasValidFiles = true;
-                                this.stats.success++;
-                                this.log(`⚡ ${filename} 直接下载成功`, 'success');
-                            } else {
-                                this.createDownloadLink(url, filename);
-                                this.stats.success++;
-                                this.log(`🔗 ${filename} 生成下载链接`, 'warning');
-                            }
+                        if (!blob || blob.size < 1024) {
+                            // 方法2: 使用JSONP方式
+                            blob = await this.downloadViaJSONP(url);
+                        }
+                        
+                        if (!blob || blob.size < 1024) {
+                            // 方法3: 使用iframe + blob转换
+                            blob = await this.downloadViaIframe(url);
+                        }
+                        
+                        if (blob && blob.size >= 1024) {
+                            zip.file(filename, blob);
+                            hasValidFiles = true;
+                            this.stats.success++;
+                            this.log(`✅ ${filename} 真实下载成功 (${this.formatFileSize(blob.size)})`, 'success');
                         } else {
+                            // 最后备用：生成下载链接
                             this.createDownloadLink(url, filename);
                             this.stats.success++;
-                            this.log(`🔗 ${filename} 生成下载链接`, 'warning');
+                            this.log(`🔗 ${filename} 下载受限，已生成链接`, 'warning');
                         }
                     } catch (error) {
                         this.createDownloadLink(url, filename);
                         this.stats.success++;
-                        this.log(`🔗 ${filename} 生成下载链接`, 'warning');
+                        this.log(`🔗 ${filename} 下载失败，已生成链接: ${error.message}`, 'warning');
                     }
                     
                     this.updateStats();
                 }
                 
                 if (hasValidFiles) {
-                    const content = await zip.generateAsync({ type: 'blob' });
+                    this.log('📦 正在生成压缩包...', 'info');
+                    const content = await zip.generateAsync({ 
+                        type: 'blob',
+                        compression: 'DEFLATE',
+                        compressionOptions: { level: 6 }
+                    });
                     const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
                     this.saveFile(content, `媒体文件_${timestamp}.zip`);
-                    this.log(`📦 压缩包已生成`, 'success');
+                    this.log(`🎉 压缩包下载成功 (${this.formatFileSize(content.size)})`, 'success');
+                } else {
+                    this.log('⚠️ 无法直接下载文件，请使用下方链接手动下载', 'warning');
+                    this.downloadLinks.classList.remove('hidden');
+                }
+            }
+
+            async downloadViaProxy(url) {
+                const proxyServices = [
+                    // 高性能代理服务列表
+                    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+                    `https://cors-anywhere.herokuapp.com/${url}`,
+                    `https://proxy.cors.sh/${url}`,
+                    `https://thingproxy.freeboard.io/fetch/${url}`,
+                    // 自定义代理（如果有的话）
+                    `https://proxy-server.herokuapp.com/proxy?url=${encodeURIComponent(url)}`
+                ];
+                
+                for (const proxyUrl of proxyServices) {
+                    try {
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), 15000); // 15秒超时
+                        
+                        const response = await fetch(proxyUrl, {
+                            method: 'GET',
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                                'Accept': '*/*',
+                                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                                'Cache-Control': 'no-cache',
+                                'X-Requested-With': 'XMLHttpRequest'
+                            },
+                            signal: controller.signal
+                        });
+                        
+                        clearTimeout(timeoutId);
+                        
+                        if (response.ok) {
+                            const blob = await response.blob();
+                            if (blob.size > 1024) { // 确保有实际内容
+                                this.log(`✅ 通过代理服务下载成功`, 'info');
+                                return blob;
+                            }
+                        }
+                    } catch (error) {
+                        // 继续尝试下一个代理
+                        continue;
+                    }
+                }
+                return null;
+            }
+
+            async downloadViaJSONP(url) {
+                return new Promise((resolve) => {
+                    try {
+                        // 创建一个隐藏的img元素来"下载"文件
+                        const img = new Image();
+                        img.crossOrigin = 'anonymous';
+                        
+                        img.onload = () => {
+                            try {
+                                // 将图像转换为canvas，再转为blob
+                                const canvas = document.createElement('canvas');
+                                const ctx = canvas.getContext('2d');
+                                canvas.width = img.width;
+                                canvas.height = img.height;
+                                ctx.drawImage(img, 0, 0);
+                                
+                                canvas.toBlob((blob) => {
+                                    resolve(blob);
+                                }, 'image/jpeg', 0.9);
+                            } catch (error) {
+                                resolve(null);
+                            }
+                        };
+                        
+                        img.onerror = () => resolve(null);
+                        img.src = url;
+                        
+                        // 10秒后超时
+                        setTimeout(() => resolve(null), 10000);
+                    } catch (error) {
+                        resolve(null);
+                    }
+                });
+            }
+
+            async downloadViaIframe(url) {
+                return new Promise((resolve) => {
+                    try {
+                        // 创建隐藏的iframe尝试加载内容
+                        const iframe = document.createElement('iframe');
+                        iframe.style.display = 'none';
+                        iframe.sandbox = 'allow-same-origin allow-scripts';
+                        
+                        iframe.onload = async () => {
+                            try {
+                                // 尝试通过fetch在iframe上下文中下载
+                                const response = await fetch(url, {
+                                    method: 'GET',
+                                    mode: 'no-cors',
+                                    credentials: 'omit'
+                                });
+                                
+                                if (response.type === 'opaque' || response.ok) {
+                                    const blob = await response.blob();
+                                    document.body.removeChild(iframe);
+                                    resolve(blob.size > 0 ? blob : null);
+                                } else {
+                                    document.body.removeChild(iframe);
+                                    resolve(null);
+                                }
+                            } catch (error) {
+                                document.body.removeChild(iframe);
+                                resolve(null);
+                            }
+                        };
+                        
+                        iframe.onerror = () => {
+                            if (iframe.parentNode) {
+                                document.body.removeChild(iframe);
+                            }
+                            resolve(null);
+                        };
+                        
+                        document.body.appendChild(iframe);
+                        iframe.src = 'about:blank';
+                        
+                        // 10秒后超时
+                        setTimeout(() => {
+                            if (iframe.parentNode) {
+                                document.body.removeChild(iframe);
+                            }
+                            resolve(null);
+                        }, 10000);
+                    } catch (error) {
+                        resolve(null);
+                    }
+                });
+            }
+
+            formatFileSize(bytes) {
+                if (bytes === 0) return '0 B';
+                const k = 1024;
+                const sizes = ['B', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+
+            async processLocalMode(urls) {
+                // 本地模式：更强力的下载尝试
+                const zip = new JSZip();
+                let hasValidFiles = false;
+                
+                for (const url of urls) {
+                    const filename = this.getFilename(url);
+                    
+                    try {
+                        // 方法1: 直接fetch（最快）
+                        let blob = await this.directFetch(url);
+                        
+                        if (!blob || blob.size < 1024) {
+                            // 方法2: 使用代理
+                            blob = await this.downloadViaProxy(url);
+                        }
+                        
+                        if (!blob || blob.size < 1024) {
+                            // 方法3: XMLHttpRequest with different settings
+                            blob = await this.downloadViaXHR(url);
+                        }
+                        
+                        if (blob && blob.size >= 1024) {
+                            zip.file(filename, blob);
+                            hasValidFiles = true;
+                            this.stats.success++;
+                            this.log(`⚡ ${filename} 下载成功 (${this.formatFileSize(blob.size)})`, 'success');
+                        } else {
+                            this.createDownloadLink(url, filename);
+                            this.stats.success++;
+                            this.log(`🔗 ${filename} 下载受限，已生成链接`, 'warning');
+                        }
+                    } catch (error) {
+                        this.createDownloadLink(url, filename);
+                        this.stats.success++;
+                        this.log(`🔗 ${filename} 下载异常: ${error.message}`, 'warning');
+                    }
+                    
+                    this.updateStats();
+                }
+                
+                if (hasValidFiles) {
+                    this.log('📦 正在生成压缩包...', 'info');
+                    const content = await zip.generateAsync({ 
+                        type: 'blob',
+                        compression: 'DEFLATE',
+                        compressionOptions: { level: 6 }
+                    });
+                    const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+                    this.saveFile(content, `媒体文件_${timestamp}.zip`);
+                    this.log(`🎉 压缩包下载成功 (${this.formatFileSize(content.size)})`, 'success');
                 }
                 
                 if (this.linkContainer.children.length > 0) {
                     this.downloadLinks.classList.remove('hidden');
                 }
+            }
+
+            async directFetch(url) {
+                try {
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Referer': this.getReferer(url),
+                            'Accept': '*/*',
+                            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                            'Cache-Control': 'no-cache',
+                            'Sec-Fetch-Dest': 'video',
+                            'Sec-Fetch-Mode': 'cors',
+                            'Sec-Fetch-Site': 'cross-site'
+                        },
+                        mode: 'cors',
+                        credentials: 'omit'
+                    });
+                    
+                    if (response.ok) {
+                        return await response.blob();
+                    }
+                    return null;
+                } catch (error) {
+                    return null;
+                }
+            }
+
+            async downloadViaXHR(url) {
+                return new Promise((resolve) => {
+                    try {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('GET', url, true);
+                        xhr.responseType = 'blob';
+                        xhr.timeout = 20000; // 20秒超时
+                        
+                        // 设置请求头
+                        xhr.setRequestHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+                        xhr.setRequestHeader('Accept', '*/*');
+                        xhr.setRequestHeader('Cache-Control', 'no-cache');
+                        
+                        const referer = this.getReferer(url);
+                        if (referer) {
+                            xhr.setRequestHeader('Referer', referer);
+                        }
+                        
+                        xhr.onload = function() {
+                            if (xhr.status === 200 && xhr.response && xhr.response.size > 1024) {
+                                resolve(xhr.response);
+                            } else {
+                                resolve(null);
+                            }
+                        };
+                        
+                        xhr.onerror = () => resolve(null);
+                        xhr.ontimeout = () => resolve(null);
+                        
+                        xhr.send();
+                    } catch (error) {
+                        resolve(null);
+                    }
+                });
+            }
+
+            getReferer(url) {
+                if (url.includes('xhscdn.com') || url.includes('xiaohongshu.com')) {
+                    return 'https://www.xiaohongshu.com/';
+                } else if (url.includes('douyin.com') || url.includes('aweme.com')) {
+                    return 'https://www.douyin.com/';
+                } else if (url.includes('tiktok.com')) {
+                    return 'https://www.tiktok.com/';
+                }
+                return '';
             }
 
             createDownloadLink(url, filename) {
